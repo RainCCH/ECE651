@@ -2,18 +2,36 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_mysqldb import MySQL
 from werkzeug.security import generate_password_hash
+from flask_mail import Mail, Message
 import re
+import uuid
 
-app = Flask(__name__)
-CORS(app)
+# Create a Flask app
+def create_app():
+    app = Flask(__name__)
+    CORS(app)
+    # Configure MySQL connection
+    app.config['MYSQL_HOST'] = 'localhost'
+    app.config['MYSQL_USER'] = 'root'
+    app.config['MYSQL_PASSWORD'] = 'rainchoi228'
+    app.config['MYSQL_DB'] = 'OnlineTutor'
+
+    # Flask-Mail configuration
+    app.config['MAIL_SERVER'] = 'smtp.gmail.com'  # The mail server
+    app.config['MAIL_PORT'] = 587  # The mail server port
+    app.config['MAIL_USE_TLS'] = True  # Use TLS
+    app.config['MAIL_USE_SSL'] = False  # Use SSL (alternative to TLS)
+    app.config['MAIL_USERNAME'] = 'username@gmail.com'  # Your email username
+    app.config['MAIL_PASSWORD'] = 'password'  # Your email password
+    app.config['MAIL_DEFAULT_SENDER'] = 'username@gmail.com'  # Default sender email address
+
+    return app
 
 email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
 
-# Configure MySQL connection
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = 'rainchoi228'
-app.config['MYSQL_DB'] = 'OnlineTutor'
+app = create_app()
+
+mail = Mail(app)
 
 mysql = MySQL(app)
 
@@ -26,6 +44,7 @@ def add_student():
     email = request.json['email']
     # Hash the password for security
     hashed_password = generate_password_hash(password)
+    token = activation_token()
     # Create a cursor
     cur = mysql.connection.cursor()
     try:
@@ -39,10 +58,12 @@ def add_student():
             return jsonify({'error': 'Username or email already exists.'}), 409
 
         # No duplicates found, proceed to insert
-        cur.execute("INSERT INTO Students(username, password, email) VALUES (%s, %s, %s)", (username, password, email))
+        cur.execute("INSERT INTO Students(username, password, email, activation_token) VALUES (%s, %s, %s, %s)", (username, password, email, token))
         
         # Commit to DB
+        send_welcome_mail(email, token)
         mysql.connection.commit()
+        
         return jsonify({'message': 'Student added successfully!'}), 201
     except Exception as e:
         # In case of any exception, rollback the transaction
@@ -61,6 +82,7 @@ def add_teacher():
     email = request.json['email']
     # Hash the password for security
     hashed_password = generate_password_hash(password)
+    token = activation_token()
     # Create a cursor
     cur = mysql.connection.cursor()
     try:
@@ -74,7 +96,7 @@ def add_teacher():
             return jsonify({'error': 'Username or email already exists.'}), 409
 
         # No duplicates found, proceed to insert
-        cur.execute("INSERT INTO Teachers(username, password, email) VALUES (%s, %s, %s)", (username, password, email))
+        cur.execute("INSERT INTO Teachers(username, password, email) VALUES (%s, %s, %s, %s)", (username, password, email, token))
         
         # Commit to DB
         mysql.connection.commit()
@@ -111,6 +133,31 @@ def delete_account(id='Students'):
         return jsonify({'message': 'Account with username/email:{} deleted successfully'.format(account_identifier)}), 200
     else:
         return jsonify({'error': 'Account not found'}), 404
+
+@app.route('/activate')
+def activate_account():
+    token = request.args.get('token')
+    print(token)
+    cur = mysql.connection.cursor()
+    # Query the database for the token and check expiration
+    cur.execute("SELECT * FROM Students WHERE activation_token = %s", (token,))
+    user = cur.fetchone()
+    
+    if user:
+        # Token is valid, activate the account and remove the token
+        cur.execute("UPDATE Students SET registration_completed = TRUE, activation_token = NULL WHERE student_id = %s", (user[0],))
+        mysql.connection.commit()
+        return "Account activated successfully!"
+    else:
+        return "Invalid or expired activation link."
+
+def activation_token():
+    return str(uuid.uuid4())
+
+def send_welcome_mail(email, token):
+    msg = Message('Welcome to OnlineTutor', recipients=[email])
+    msg.body = 'Welcome to OnlineTutor! Please click the link below to activate your account:\nhttp://127.0.0.1:5000/activate?token={}'.format(token)
+    mail.send(msg)
 
 if __name__ == '__main__':
     app.run(debug=True)
